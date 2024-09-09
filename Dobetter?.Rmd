@@ -1,0 +1,155 @@
+---
+title: "Code"
+output: html_document
+date: "2024-09-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(fs)
+library(readxl)
+library(scales)
+
+```
+
+```{r}
+font_add_google("Open Sans")
+showtext_auto()
+
+# Define theme_reason based on the uploaded file
+theme_reason <- function(base_line_size = 0.5,
+                         base_family = "Open Sans",
+                         base_size = 12) {
+  theme_minimal(base_family = base_family,
+                base_size = base_size,
+                base_line_size = base_line_size) %+replace%
+    theme(
+      axis.ticks = element_line(),
+      panel.grid = element_blank(),
+      panel.grid.major.y = element_line(color = "grey92"),
+      legend.position = "top"
+    )
+}
+
+
+```
+
+```{r}
+df <- read.csv("all_plans_2023.csv")
+
+# Combine returns into a new column 'return', prioritizing 'market_return_from_valuation' over 'market_return_from_acfr'
+df <- df %>%
+  mutate(return = ifelse(!is.na(market_return_from_valuation), market_return_from_valuation, market_return_from_acfr))
+
+# Clean the data: Keep relevant columns and remove rows with missing return values
+df_clean <- df %>%
+  select(Name, FY, return) %>%
+  filter(!is.na(return))
+
+# Ensure FY is numeric
+df_clean$FY <- as.numeric(df_clean$FY)
+df_clean$return <- as.numeric(df_clean$return)
+
+# Calculate the average return per year
+average_returns <- df_clean %>%
+  group_by(FY) %>%
+  summarize(average_return = mean(return, na.rm = TRUE))
+
+# Plotting using ggplot2
+ggplot() +
+  # Plot returns for each plan
+  geom_line(data = df_clean, aes(x = FY, y = return, group = Name, color = Name), alpha = 0.3) +  
+  # Plot the average return line
+  geom_line(data = average_returns, aes(x = FY, y = average_return), color = "black", size = 1.2) +
+  # Add titles and labels
+  labs(title = "Annual Returns for Each Plan and Average Return by Year",
+       x = "Fiscal Year", y = "Return") +
+  theme_reason() +
+  theme(legend.position = "none")
+
+
+```
+
+```{r}
+df_clean <- df_clean %>%
+  group_by(Name) %>%
+  arrange(FY) %>%
+  mutate(cumulative_return = cumsum(return) * 100)  # Convert cumulative returns to percentages
+
+# Separate Nevada PERS from other plans
+nevada_pers <- df_clean %>% filter(grepl("Nevada Public Employees Retirement System", Name))
+other_plans <- df_clean %>% filter(!grepl("Nevada Public Employees Retirement System", Name))
+
+# Calculate the average cumulative return per year
+average_cumulative_returns <- df_clean %>%
+  group_by(FY) %>%
+  summarize(average_cumulative_return = mean(cumulative_return, na.rm = TRUE))
+
+# Plot the data
+NPERS <- ggplot() +
+  # Plot other plans in the background
+  geom_line(data = other_plans, aes(x = FY, y = cumulative_return, group = Name), color = "gray", alpha = 0.5) +
+  # Highlight Nevada PERS
+  geom_line(data = nevada_pers, aes(x = FY, y = cumulative_return), color = "red", size = 1.2) +
+  # Add black line for average cumulative return
+  geom_line(data = average_cumulative_returns, aes(x = FY, y = average_cumulative_return), color = "black", size = 1.2, linetype = "dashed") +
+  labs(title = "Comparison of Nevada PERS vs. Other Pension Plans",
+       x = "Fiscal Year", y = "Cumulative Return (%)") +
+  scale_y_continuous(labels = percent_format(scale = 1)) +  # Format y-axis as percentage
+  xlim(2000, 2022) +  # Cut off the graph at 2022
+  theme_reason()  # Apply the custom Reason theme
+
+print(NPERS)
+# Save the plot to the 'outputs' folder with adjusted size to match R preview
+ggsave("outputs/nevada_pers_comparison_percentage.png", plot = NPERS, width = 12, height = 8)
+
+
+```
+
+
+```{r}
+
+df_diff_returns <- read_xlsx("DiffReturns.xlsx")
+
+# Convert the returns to cumulative growth (multiplying cumulative returns)
+df_diff_returns <- df_diff_returns %>%
+  mutate(`Nevada PERS Cumulative` = cumprod(1 + `Nevada PERS`) - 1,
+         `Montgomery County Cumulative` = cumprod(1 + `Montgomery County`) - 1,
+         `Butler County Cumulative` = cumprod(1 + `Butler County`) - 1,
+         `Harvard Cumulative` = cumprod(1 + Harvard) - 1)
+
+# Filter the df_clean data to get cumulative growth for all funds from 2013 to 2022
+df_clean <- df_clean %>%
+  filter(FY >= 2013 & FY <= 2022) %>%
+  group_by(Name) %>%
+  arrange(FY) %>%
+  mutate(cumulative_return = cumprod(1 + return) - 1)  # Convert to cumulative growth
+
+# Calculate the average cumulative growth for each year for all funds
+average_cumulative_growth <- df_clean %>%
+  group_by(FY) %>%
+  summarize(average_cumulative_return = mean(cumulative_return, na.rm = TRUE))
+
+# Plotting the cumulative growth for Nevada PERS, Montgomery County, Butler County, Harvard, and the average cumulative growth
+ggplot(df_diff_returns, aes(x = fye)) +
+  # Add lines for each entity
+  geom_line(aes(y = `Nevada PERS Cumulative`, color = "Nevada PERS"), size = 1.2) +
+  geom_line(aes(y = `Montgomery County Cumulative`, color = "Montgomery County"), size = 1.2) +
+  geom_line(aes(y = `Butler County Cumulative`, color = "Butler County"), size = 1.2) +
+  geom_line(aes(y = `Harvard Cumulative`, color = "Harvard"), size = 1.2) +
+  # Add a line for the average cumulative growth of all funds
+  geom_line(data = average_cumulative_growth, aes(x = FY, y = average_cumulative_return, color = "Average All Funds"), size = 1.2, linetype = "dashed") +
+  labs(title = "10-Year Cumulative Growth (2013 to 2022)",
+       x = "Fiscal Year", y = "Cumulative Growth (%)") +
+  scale_x_continuous(breaks = seq(2013, 2022, by = 1), labels = as.character(seq(2013, 2022, by = 1))) +  # Only show whole years
+  scale_y_continuous(labels = percent_format(scale = 1)) +  # Format y-axis as percentage
+  scale_color_manual(values = c("Nevada PERS" = "red", "Montgomery County" = "blue", "Butler County" = "green", "Harvard" = "#A51C30", "Average All Funds" = "black")) +
+  theme_reason() +  # Apply custom Reason theme
+  xlim(2013, 2022)  # Cut off the graph at 2022
+
+
+```
+
+
