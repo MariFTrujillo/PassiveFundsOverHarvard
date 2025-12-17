@@ -12,7 +12,7 @@ library(fs)
 library(readxl)
 library(scales)
 library(showtext)
-
+library(tidyr)
 ```
 
 ```{r}
@@ -45,226 +45,316 @@ C7 <- "#2779CB"  # Bright orange
 ```
 
 
-# Figure 1 
 ```{r}
 
-# Normalize column names
-names(df) <- tolower(gsub(" ", "_", names(df)))
+start_year <- 2013
+end_year <- 2023
 
-df_clean <- df %>%
-  mutate(return = ifelse(!is.na(market_return_from_valuation), 
-                         market_return_from_valuation, 
-                         market_return_from_acfr)) %>%
-  select(name, fy, return) %>%
-  filter(!is.na(return)) %>%
-  mutate(fy = as.numeric(fy), return = as.numeric(return))
+return_data <- read.csv("return_data.csv")
 
-# Calculate yearly average returns
-average_returns <- df_clean %>%
-  group_by(fy) %>%
-  summarize(average_return = mean(return, na.rm = TRUE))
+# average return datum and time-series average return in 2004-2023
+return_national <- return_data %>% 
+  select(fy, month, state, state_abb, plan, plan_abb, gov_type2, return, arr, mva) %>% 
+  filter(!is.na(mva) & (fy >= start_year & fy <= end_year)) %>%
+  group_by(fy) %>% 
+  summarise(
+    return = weighted.mean(return, w = mva, na.rm = T),
+    arr = weighted.mean(arr, w = mva, na.rm = T)
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    mean_arr = mean(arr, na.rm = T),
+    latest_arr = last(arr, na_rm = T),
+    avg_return = prod(1 + return)^(1 / n()) - 1,
+    cum_return = cumprod(1 + return)*100
+  )
+```
 
-# Compute cumulative returns from average yearly returns
-average_cumulative_returns <- average_returns %>%
-  mutate(average_cumulative_return = cumprod(1 + average_return) * 100)  # Multiply by 100 for percentage scale
 
-# Add cumulative returns to individual plans
-df_clean <- df_clean %>%
-  group_by(name) %>%
-  arrange(fy) %>%
-  mutate(cumulative_return = cumprod(1 + return) * 100)  # Multiply by 100 for percentage scale
+```{r}
+df_diff_returns <- read_excel("DiffReturnsV3.xlsx", sheet = "DiffReturnsV3")
 
+before_2013_returns <- df_diff_returns %>% 
+  filter(fye < 2013) %>% 
+  summarise(
+    Nevada_PERS_geo_return = (prod(1 + `Nevada_PERS`)^(1/n()) - 1),
+    Montgomery_County_geo_return = (prod(1 + `Montgomery_County`)^(1/n()) - 1),
+    Butler_County_geo_return = (prod(1 + `Butler_County`)^(1/n()) - 1),
+    Harvard_geo_return = (prod(1 + Harvard)^(1/n()) - 1)
+  )
+
+after_2013_returns <- df_diff_returns %>% 
+  filter(fye >= 2013 & fye <= 2023) %>% 
+  summarise(
+    Nevada_PERS_geo_return = (prod(1 + `Nevada_PERS`)^(1/n()) - 1),
+    Montgomery_County_geo_return = (prod(1 + `Montgomery_County`)^(1/n()) - 1),
+    Butler_County_geo_return = (prod(1 + `Butler_County`)^(1/n()) - 1),
+    Harvard_geo_return = (prod(1 + Harvard)^(1/n()) - 1)
+  )
+
+# Reshape the data to long format
+df_diff_returns <- df_diff_returns %>% 
+  filter(!is.na(return) & fye >= start_year & fye <= end_year) %>% 
+  mutate(
+    `Montgomery_cum_return` = cumprod(1 + `Montgomery_County`) * 100,
+    `Butler_cum_return` = cumprod(1 + `Butler_County`) * 100,
+    `Nevada_PERS_cum_return` = cumprod(1 + `Nevada_PERS`) * 100,
+    `Harvard_cum_return` = cumprod(1 + Harvard) * 100,
+    `Yale_cum_return` = cumprod(1 + Yale) * 100
+  )
+
+
+# Calculate geometric 10-year means for Nevada PERS, Montgomery County, Butler County, and Harvard
+geometric_mean_years <- df_diff_returns %>%
+  summarize(
+    Nevada_PERS_geo_return = (prod(1 + `Nevada_PERS`)^(1/n()) - 1),
+    Montgomery_County_geo_return = (prod(1 + `Montgomery_County`)^(1/n()) - 1),
+    Butler_County_geo_return = (prod(1 + `Butler_County`)^(1/n()) - 1),
+    Harvard_geo_return = (prod(1 + Harvard)^(1/n()) - 1)
+  )
+
+```
+
+# Figure 1 
+```{r}
 # Separate Nevada PERS from other plans
-nevada_pers <- df_clean %>% filter(grepl("Nevada Public Employees Retirement System", name))
-other_plans <- df_clean %>% filter(!grepl("Nevada Public Employees Retirement System", name))
-
-# Calculate the average cumulative return per year
-average_cumulative_returns <- df_clean %>%
-  group_by(fy) %>%
-  summarize(average_cumulative_return = mean(cumulative_return, na.rm = TRUE))
+nevada_pers <- return_data %>% filter(grepl("Nevada Regular Employees", plan_abb)) %>% 
+  select(fy, month, state, state_abb, plan, plan_abb, gov_type2, return, arr, mva) %>% 
+  filter(!is.na(mva) & (fy >= start_year & fy <= end_year)) %>%
+  mutate(
+    avg_return = prod(1 + return)^(1 / n()) - 1,
+    cum_return = cumprod(1 + return) * 100
+  )
+other_plans <- return_data %>% filter(!grepl("Nevada Regular Employees", plan_abb)) %>% 
+  select(fy, month, state, state_abb, plan, plan_abb, gov_type2, return, arr, mva) %>% 
+    filter(!is.na(mva) & (fy >= start_year & fy <= end_year)) %>%
+    group_by(plan) %>% 
+    mutate(
+      avg_return = prod(1 + return)^(1 / n()) - 1,
+      cum_return = cumprod(1 + return)*100
+    ) %>% 
+    ungroup()
 
 # Plot the data
 NPERS <- ggplot() +
   # Plot other plans in the background
-  geom_line(data = other_plans, aes(x = fy, y = cumulative_return, group = name), color = "gray", alpha = 0.5) +
+  geom_line(data = other_plans, aes(x = fy, y = cum_return, group = plan), color = "gray", alpha = 0.5) +
   # Highlight Nevada PERS
-  geom_line(data = nevada_pers, aes(x = fy, y = cumulative_return), color = "#FF6733", size = 1.2) +
+  geom_line(data = nevada_pers, aes(x = fy, y = cum_return), color = "#FF6733", size = 1.2) +
   # Add black line for average cumulative return
-  geom_line(data = average_cumulative_returns, aes(x = fy, y = average_cumulative_return), color = "black", size = 1.2, linetype = "dashed") +
+  geom_line(data = return_national, aes(x = fy, y = cum_return), color = "black", size = 1.2, linetype = "dashed") +
   labs(title = "Comparison of Nevada PERS vs. Other Pension Plans",
        x = "Fiscal Year", y = "Cumulative Return (%)") +
-  scale_y_continuous(labels = percent_format(scale = 1)) +  # Format y-axis as percentage
-  xlim(2002, 2022) + # Cut off the graph at 2022
-  scale_y_continuous(labels = scales::number_format(scale = 1), limits = c(0, 600)) + # Limit y-axis to 0-600
+  scale_x_continuous(breaks = seq(start_year, end_year, by = 1), labels = as.character(seq(start_year, end_year, by = 1))) +
+  scale_y_continuous(labels = scales::number_format(scale = 1), limits = c(0, 300)) +
   theme_reason()  # Apply the custom Reason theme
 
 print(NPERS)
 # Save the plot to the 'outputs' folder with adjusted size to match R preview
-ggsave("outputs/nevada_pers_comparison_percentage.png", plot = NPERS, width = 12, height = 8)
-
-
+# ggsave("outputs/nevada_pers_comparison_percentage.png", plot = NPERS, width = 12, height = 8)
 ```
 
 # Figure 2 
 ```{r}
-df_clean2 <- df_clean %>%
-  group_by(name) %>%
-  arrange(fy) %>%
-  mutate(cumulative_return = cumprod(return) * 100)  # Convert cumulative returns to percentages
-
 # Separate Nevada PERS from other plans
-penn_states <- df_clean %>%
-  filter(grepl("Pennsylvania Public School Employees' Retirement System", name), fy >= 2013) %>%  # Start from 2013
-  group_by(name) %>%
-  arrange(fy) %>%
-  mutate(cumulative_return = cumprod(1 + return) * 100)  # Convert to percentage
+penn_states <- other_plans %>%
+  filter(grepl("Pennsylvania Public School Employees' Retirement System", plan))
 
 # Filter and calculate cumulative returns for Penn Teachers
-penn_teachers <- df_clean %>%
-  filter(grepl("Pennsylvania State Employees' Retirement System", name), fy >= 2013) %>%  # Start from 2013
-  group_by(name) %>%
-  arrange(fy) %>%
-  mutate(cumulative_return = cumprod(1 + return) * 100)  # Convert to percentage
+penn_teachers <- other_plans %>%
+  filter(grepl("Pennsylvania State Employees' Retirement System", plan))
+
+penn_states_before_2013 <- return_data %>% 
+  filter(grepl("Pennsylvania Public School Employees' Retirement System", plan) & fy < 2013 & fy >= 2003) %>%
+  select(fy, month, state, state_abb, plan, plan_abb, gov_type2, return, arr, mva) %>%
+  filter(!is.na(mva)) %>%
+  summarise(
+    avg_return = prod(1 + return)^(1 / n()) - 1  
+    )
+
+penn_states_after_2013 <- return_data %>% 
+  filter(grepl("Pennsylvania Public School Employees' Retirement System", plan) & fy >= 2013 & fy <= 2023) %>%
+  select(fy, month, state, state_abb, plan, plan_abb, gov_type2, return, arr, mva) %>%
+  filter(!is.na(mva)) %>%
+  summarise(
+    avg_return = prod(1 + return)^(1 / n()) - 1
+    )
+
+penn_teachers_before_2013 <- return_data %>%
+  filter(grepl("Pennsylvania State Employees' Retirement System", plan) & fy < 2013 & fy >= 2003) %>%
+  select(fy, month, state, state_abb, plan, plan_abb, gov_type2, return, arr, mva) %>%
+  filter(!is.na(mva)) %>%
+  summarise(
+    avg_return = prod(1 + return)^(1 / n()) - 1  
+    )
+
+penn_teachers_after_2013 <- return_data %>%
+  filter(grepl("Pennsylvania State Employees' Retirement System", plan) & fy >= 2013 & fy <= 2023) %>%
+  select(fy, month, state, state_abb, plan, plan_abb, gov_type2, return, arr, mva) %>%
+  filter(!is.na(mva)) %>%
+  summarise(
+    avg_return = prod(1 + return)^(1 / n()) - 1
+    )
 
 df_diff_filtered <- df_diff_returns %>%
   select(-`Nevada_PERS`)
 
 # Plotting the cumulative growth for Nevada PERS, Montgomery County, Butler County, Ohio STRS, and the average cumulative growth
 Penn <- ggplot(df_diff_filtered, aes(x = as.numeric(fye))) +
-  geom_line(aes(y = `Montgomery_cum`, color = "Montgomery County"), size = 1.2) +
-  geom_line(aes(y = `Butler_cum`, color = "Butler County"), size = 1.2) +
-  geom_line(data = penn_states, aes(x = fy, y = cumulative_return, color = "Penn State"), size = 1.8) +
-  geom_line(data = penn_teachers, aes(x = fy, y = cumulative_return, color = "Penn Teachers"), size = 1.8) +
-  geom_line(data = average_cumulative_returns13, aes(x = fy, y = average_cumulative_return, color = "Average All Funds"), 
-            size = 1.2, linetype = "dashed") +
+  geom_line(aes(y = `Montgomery_cum_return`, color = "Montgomery County"), size = 1.2) +
+  geom_line(aes(y = `Butler_cum_return`, color = "Butler County"), size = 1.2) +
+  geom_line(data = penn_states, aes(x = fy, y = cum_return, color = "Penn State"), size = 1.8) +
+  geom_line(data = penn_teachers, aes(x = fy, y = cum_return, color = "Penn Teachers"), size = 1.8) +
+  # geom_line(data = return_national, aes(x = fy, y = cum_return, color = "Average All Funds"),
+  #           size = 1.2, linetype = "dashed") +
   labs(
-    title = "10-Year Cumulative Growth (2013 to 2022)",
+    title = "10-Year Cumulative Growth (2004 to 2023)",
     x = "Fiscal Year",
     y = "Cumulative Growth (%)"
   ) +
-  scale_x_continuous(breaks = seq(2013, 2022, by = 1), labels = scales::number_format(accuracy = 1)) +
-  scale_y_continuous(labels = scales::number_format(scale = 1)) +
+  scale_x_continuous(breaks = seq(start_year, end_year, by = 1), labels = as.character(seq(start_year, end_year, by = 1))) +
+  scale_y_continuous(labels = scales::number_format(scale = 1), limits = c(100, 250)) +
   scale_color_manual(values = c(
-    "Montgomery County" = "#2779CB", 
-    "Butler County" = "#F6B941", 
-    "Penn State" = "#66BB8B", 
-    "Penn Teachers" = "#949D6A", 
-    "Average All Funds" = "black"
+    "Montgomery County" = "#2779CB",
+    "Butler County" = "#F6B941",
+    "Penn State" = "#66BB8B",
+    "Penn Teachers" = "#949D6A"
+    # "Average All Funds" = "black"
   )) +
   theme_reason() +
-  theme(legend.title = element_blank()) +
-  xlim(2013, 2022)
+  theme(legend.title = element_blank())
 
 # Print the plot
 print(Penn)
 
 ```
+```{r}
+# Long-format table comparing returns before and after 2013 of Pennsylvania PSERS, SERS, Montgomery County, and Bulter County
+returns_comparison <- data.frame(
+  Plan = rep(
+    c(
+      "Pennsylvania Public School Employees' Retirement System", 
+      "Pennsylvania State Employees' Retirement System",
+      "Montgomery County",
+      "Butler County"
+    ),
+    each = 2
+  ),
+  Period = rep(c("Before 2013", "After 2013"), times = 4),
+  Geo_Mean_Return = c(
+    penn_states_before_2013$avg_return * 100,
+    penn_states_after_2013$avg_return * 100,
+    penn_teachers_before_2013$avg_return * 100,
+    penn_teachers_after_2013$avg_return * 100,
+    before_2013_returns$Montgomery_County_geo_return * 100,
+    after_2013_returns$Montgomery_County_geo_return * 100,
+    before_2013_returns$Butler_County_geo_return * 100,
+    after_2013_returns$Butler_County_geo_return * 100)
+)
 
+
+
+# non-stacked Bar chart to compare geometric means before and after 2013
+ggplot(returns_comparison, aes(x = Plan, y = Geo_Mean_Return, 
+                                   fill = factor(Period, levels = c("Before 2013", "After 2013")))) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  labs(
+    title = "Investment Returns Before vs After 2013",
+    x = "Retirement Plan",
+    y = "Geometric Mean Return (%)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  coord_cartesian(ylim = c(4, 8))+
+  theme(legend.title = element_blank())
+
+
+```
 
 # Figure 3
 
 ```{r}
-
-df_diff_returns <- read_xlsx("DiffReturns.xlsx")
-
-# Convert the returns to cumulative growth (multiplying cumulative returns)
-df_diff_returns <- df_diff_returns %>%
-  mutate(`Nevada_PERS_cum` = cumprod(1 + `Nevada_PERS`)* 100,
-         `Montgomery_cum` = cumprod(1 + `Montgomery_County`)* 100,
-         `Butler_cum` = cumprod(1 + `Butler_County`)* 100,
-         `Harvard_cum` = cumprod(1 + Harvard)* 100)
-
-average_returns2 <- df_clean %>%
-  filter(fy >= 2013 & fy <= 2022) %>%  # Restrict to fiscal years 2013 through 2022
-  group_by(fy) %>%
-  summarize(average_return = mean(return, na.rm = TRUE))  # Calculate average return per year
-
-# Compute cumulative returns from average yearly returns
-average_cumulative_returns13 <- average_returns2 %>%
-  mutate(average_cumulative_return = cumprod(1 + average_return) * 100)  # Multiply by 100 for percentage scale
-
-
 harvard <- ggplot(df_diff_returns, aes(x = fye)) +
-  geom_line(aes(y = Nevada_PERS_cum, color = "Nevada PERS"), size = 1.2) +
-  geom_line(aes(y = Montgomery_cum, color = "Montgomery County"), size = 1.2) +
-  geom_line(aes(y = Butler_cum, color = "Butler County"), size = 1.2) +
-  geom_line(aes(y = Harvard_cum, color = "Harvard"), size = 1.2) +
-  geom_line(data = average_cumulative_returns13, aes(x = fy, y = average_cumulative_return, color = "Average All Funds"), 
-            size = 1.2, linetype = "dashed") +
+  geom_line(aes(y = Nevada_PERS_cum_return, color = "Nevada PERS"), size = 1.2) +
+  # geom_line(aes(y = Montgomery_cum_return, color = "Montgomery County"), size = 1.2) +
+  # geom_line(aes(y = Butler_cum_return, color = "Butler County"), size = 1.2) +
+  geom_line(aes(y = Harvard_cum_return, color = "Harvard"), size = 1.2) +
+  # geom_line(data = return_national, aes(x = fy, y = cum_return, color = "Average All Funds"), 
+  #           size = 1.2, linetype = "dashed") +
   labs(
     title = "10-Year Cumulative Growth (2013 to 2022)",
     x = "Fiscal Year", 
     y = "Cumulative Growth (%)"
   ) +
-  scale_x_continuous(breaks = seq(2013, 2022, by = 1), labels = as.character(seq(2013, 2022, by = 1))) +
-  scale_y_continuous(labels = percent_format(scale = 1)) +
+  scale_x_continuous(breaks = seq(start_year, end_year, by = 1), labels = as.character(seq(start_year, end_year, by = 1))) +
+  scale_y_continuous(labels = percent_format(scale = 1))
   scale_color_manual(values = c(
-    "Nevada PERS" = "#FF6733", 
-    "Montgomery County" = "#2779CB", 
-    "Butler County" = "#F6B941", 
-    "Harvard" = "#F8333C", 
-    "Average All Funds" = "black"
+    "Nevada PERS" = "#FF6733",
+    # "Montgomery County" = "#2779CB",
+    # "Butler County" = "#F6B941",
+    "Harvard" = "#F8333C"
+    # "Average All Funds" = "black"
   )) +
-  theme_reason() +
-  xlim(2013, 2022)
+  theme_reason()
 
 print(harvard)
 
 ```
 
 ```{r}
-# Calculate geometric means for Nevada PERS, Montgomery County, Butler County, and Harvard
-geometric_mean_10_years <- df_diff_returns %>%
-  filter(fye != 2023) %>%  # Exclude year 2023
-  summarize(
-    Nevada_PERS_Geometric = (prod(1 + `Nevada_PERS` / 100)^(1/10) - 1) * 100,
-    Montgomery_County_Geometric = (prod(1 + `Montgomery_County` / 100)^(1/10) - 1) * 100,
-    Butler_County_Geometric = (prod(1 + `Butler_County` / 100)^(1/10) - 1) * 100,
-    Harvard_Geometric = (prod(1 + Harvard / 100)^(1/10) - 1) * 100
-  )
+# # Calculate geometric means for Nevada PERS, Montgomery County, Butler County, and Harvard
+# geometric_mean_10_years <- df_diff_returns %>%
+#   filter(fye != 2023) %>%  # Exclude year 2023
+#   summarize(
+#     Nevada_PERS_Geometric = (prod(1 + `Nevada_PERS` / 100)^(1/10) - 1) * 100,
+#     Montgomery_County_Geometric = (prod(1 + `Montgomery_County` / 100)^(1/10) - 1) * 100,
+#     Butler_County_Geometric = (prod(1 + `Butler_County` / 100)^(1/10) - 1) * 100,
+#     Harvard_Geometric = (prod(1 + Harvard / 100)^(1/10) - 1) * 100
+#   )
 
-# Calculate the geometric mean for the average returns from the average_returns dataset (2013-2022)
-average_returns_geometric <- average_returns %>%
-  filter(fy >= 2013 & fy <= 2022) %>%
-  summarize(
-    Average_All_Plans_Geometric = (prod(1 + average_return / 100)^(1/10) - 1) * 100
-  )
-
-# Bind the geometric mean for all plans
-geometric_mean_10_years <- geometric_mean_10_years %>%
-  bind_cols(average_returns_geometric)
-
-# Now, calculate the geometric mean for Pennsylvania PSERS and SERS from df
-df_pennsylvania <- df %>%
-  filter(name %in% c("Pennsylvania Public School Employees' Retirement System", 
-                     "Pennsylvania State Employees' Retirement System"),
-         fy != 2023)  # Exclude year 2023
-
-# Combine returns into a new column 'return', prioritizing 'market_return_from_valuation' over 'market_return_from_acfr'
-df_pennsylvania <- df_pennsylvania %>%
-  mutate(return = ifelse(!is.na(market_return_from_valuation), market_return_from_valuation, market_return_from_acfr)) %>%
-  select(name, fy, return) %>%
-  filter(!is.na(return))
-
-# Ensure fy and return columns are numeric
-df_pennsylvania$fy <- as.numeric(df_pennsylvania$fy)
-df_pennsylvania$return <- as.numeric(df_pennsylvania$return)
-
-# Filter data for the last 10 years (2013-2022)
-df_pennsylvania_10_years <- df_pennsylvania %>%
-  filter(fy >= 2013 & fy <= 2022)
-
-# Calculate the geometric mean for PSERS and SERS
-geometric_mean_10_years_penn <- df_pennsylvania_10_years %>%
-  group_by(name) %>%
-  summarize(geometric_mean = (prod(1 + return / 100)^(1/10) - 1) * 100)
-
-# Bind the Pennsylvania plans' geometric means to the existing geometric_mean_10_years table
-geometric_mean_10_years <- geometric_mean_10_years %>%
-  bind_rows(geometric_mean_10_years_penn)
-
-# Print the final table with geometric means for all plans
-print(geometric_mean_10_years)
+# # Calculate the geometric mean for the average returns from the average_returns dataset (2013-2022)
+# average_returns_geometric <- average_returns %>%
+#   filter(fy >= 2013 & fy <= 2022) %>%
+#   summarize(
+#     Average_All_Plans_Geometric = (prod(1 + average_return / 100)^(1/10) - 1) * 100
+#   )
+# 
+# # Bind the geometric mean for all plans
+# geometric_mean_10_years <- geometric_mean_10_years %>%
+#   bind_cols(average_returns_geometric)
+# 
+# # Now, calculate the geometric mean for Pennsylvania PSERS and SERS from df
+# df_pennsylvania <- df %>%
+#   filter(name %in% c("Pennsylvania Public School Employees' Retirement System", 
+#                      "Pennsylvania State Employees' Retirement System"),
+#          fy != 2023)  # Exclude year 2023
+# 
+# # Combine returns into a new column 'return', prioritizing 'market_return_from_valuation' over 'market_return_from_acfr'
+# df_pennsylvania <- df_pennsylvania %>%
+#   mutate(return = ifelse(!is.na(market_return_from_valuation), market_return_from_valuation, market_return_from_acfr)) %>%
+#   select(name, fy, return) %>%
+#   filter(!is.na(return))
+# 
+# # Ensure fy and return columns are numeric
+# df_pennsylvania$fy <- as.numeric(df_pennsylvania$fy)
+# df_pennsylvania$return <- as.numeric(df_pennsylvania$return)
+# 
+# # Filter data for the last 10 years (2013-2022)
+# df_pennsylvania_10_years <- df_pennsylvania %>%
+#   filter(fy >= 2013 & fy <= 2022)
+# 
+# # Calculate the geometric mean for PSERS and SERS
+# geometric_mean_10_years_penn <- df_pennsylvania_10_years %>%
+#   group_by(name) %>%
+#   summarize(geometric_mean = (prod(1 + return / 100)^(1/10) - 1) * 100)
+# 
+# # Bind the Pennsylvania plans' geometric means to the existing geometric_mean_10_years table
+# geometric_mean_10_years <- geometric_mean_10_years %>%
+#   bind_rows(geometric_mean_10_years_penn)
+# 
+# # Print the final table with geometric means for all plans
+# print(geometric_mean_10_years)
 
 
 ```
